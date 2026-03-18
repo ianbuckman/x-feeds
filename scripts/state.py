@@ -56,6 +56,16 @@ def reset_account(handle: str):
     return False
 
 
+def mark_digest(page_id: str, period: str):
+    state = load_state()
+    state.setdefault("digests", []).append({
+        "page_id": page_id,
+        "period": period,
+        "created": datetime.now(timezone.utc).isoformat(),
+    })
+    save_state(state)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Manage tweet processing state")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -64,6 +74,10 @@ def main():
     p_mark.add_argument("handle", help="Twitter @handle")
     p_mark.add_argument("--last-tweet-id", default="", help="ID of latest processed tweet")
     p_mark.add_argument("--notion-page-id", default="", help="Notion page ID")
+
+    p_digest = sub.add_parser("mark-digest", help="Record a digest page")
+    p_digest.add_argument("--page-id", required=True, help="Notion page ID of the digest")
+    p_digest.add_argument("--period", required=True, help="Date range, e.g. 2026-03-11~2026-03-18")
 
     sub.add_parser("check-time", help="Update last_run timestamp")
     sub.add_parser("show", help="Show state summary")
@@ -77,6 +91,9 @@ def main():
         mark_account(args.handle, args.last_tweet_id,
                      getattr(args, "notion_page_id", ""))
         print(f"Marked @{args.handle.lstrip('@')} as processed", file=sys.stderr)
+    elif args.command == "mark-digest":
+        mark_digest(args.page_id, args.period)
+        print(f"Recorded digest for period {args.period}", file=sys.stderr)
     elif args.command == "check-time":
         update_last_run()
         print("Updated last_run timestamp", file=sys.stderr)
@@ -86,6 +103,7 @@ def main():
             "total_accounts": len(state.get("accounts", {})),
             "last_run": state.get("last_run"),
             "accounts": state.get("accounts", {}),
+            "digests": state.get("digests", []),
         }
         print(json.dumps(summary, indent=2, ensure_ascii=False))
     elif args.command == "reset":
