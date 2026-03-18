@@ -1,0 +1,17 @@
+accounts:
+- handle: karpathy
+  user_id: null
+  name: Andrej Karpathy
+  category: ai-researcher
+- handle: DrJimFan
+  user_id: null
+  name: Jim Fan
+  category: ai-researcher
+- handle: ylecun
+  user_id: null
+  name: Yann LeCun
+  category: ai-researcher
+- handle: sama
+  user_id: null
+  name: Sam Altman
+  category: ai-ceo
