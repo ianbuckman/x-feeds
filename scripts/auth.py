@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manage Twitter authentication via browser cookie extraction."""
 
+import re
 import sys
 import json
 import asyncio
@@ -9,14 +10,71 @@ from pathlib import Path
 
 from twikit import Client
 
-# Monkey-patch twikit ClientTransaction.init() to fix #304:
-# https://github.com/d60/twikit/issues/304
-# self.home_page_response was set before self.key, causing AttributeError
-# on retry if intermediate steps fail. Move it to the end so the guard
-# flag is only set after all attributes are successfully initialized.
-from twikit.x_client_transaction.transaction import ClientTransaction, handle_x_migration
+# Monkey-patch twikit ClientTransaction to fix two issues:
+# 1. #304: AttributeError on retry (init order fix)
+# 2. ON_DEMAND_FILE_REGEX no longer matches X.com's new webpack chunk format.
+#    Old format: "ondemand.s": "HASH"
+#    New format: CHUNK_ID:"ondemand.s" with hash in a separate mapping.
+from twikit.x_client_transaction.transaction import (
+    ClientTransaction, handle_x_migration, INDICES_REGEX,
+)
 
-_original_ct_init = ClientTransaction.init
+_original_get_indices = ClientTransaction.get_indices
+
+async def _patched_get_indices(self, home_page_response, session, headers):
+    """Find ondemand.s JS file using new webpack chunk format and extract key byte indices."""
+    response_text = str(home_page_response)
+
+    # Try the original approach first
+    try:
+        return await _original_get_indices(self, home_page_response, session, headers)
+    except Exception:
+        pass
+
+    # Fallback: new X.com format where chunk IDs map to names separately from hashes
+    # Find chunk ID: e.g. 20113:"ondemand.s"
+    chunk_match = re.search(r'(\d+):"ondemand\.s"', response_text)
+    if not chunk_match:
+        raise Exception("Couldn't find ondemand.s chunk ID in home page")
+
+    chunk_id = chunk_match.group(1)
+
+    # Find all hash candidates for this chunk ID: e.g. 20113:"2507f89"
+    # The hash mapping is in a different part of the JS, so find all matches
+    hash_candidates = re.findall(chunk_id + r':"([a-f0-9]{6,12})"', response_text)
+    if not hash_candidates:
+        raise Exception(f"Couldn't find hash for ondemand.s chunk {chunk_id}")
+
+    # Try each hash candidate with retries (network can be flaky)
+    last_error = None
+    for chunk_hash in hash_candidates:
+        url = f"https://abs.twimg.com/responsive-web/client-web/ondemand.s.{chunk_hash}a.js"
+        for attempt in range(3):
+            try:
+                js_resp = await session.request(method="GET", url=url, headers=headers)
+                if js_resp.status_code != 200:
+                    last_error = f"HTTP {js_resp.status_code}"
+                    break  # non-retryable
+                key_byte_indices = []
+                for item in INDICES_REGEX.finditer(str(js_resp.text)):
+                    key_byte_indices.append(item.group(2))
+                if key_byte_indices:
+                    key_byte_indices = list(map(int, key_byte_indices))
+                    print(f"Found KEY_BYTE indices via new format (chunk {chunk_id}, hash {chunk_hash})",
+                          file=sys.stderr)
+                    return key_byte_indices[0], key_byte_indices[1:]
+                last_error = "INDICES_REGEX matched nothing"
+                break  # non-retryable
+            except Exception as e:
+                last_error = str(e)
+                if attempt < 2:
+                    import asyncio as _aio
+                    await _aio.sleep(2)
+                continue
+
+    raise Exception(f"Couldn't get KEY_BYTE indices: {last_error}")
+
+ClientTransaction.get_indices = _patched_get_indices
 
 async def _patched_ct_init(self, session, headers):
     home_page_response = await handle_x_migration(session, headers)

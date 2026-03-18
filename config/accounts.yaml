@@ -15,3 +15,7 @@ accounts:
   user_id: null
   name: Sam Altman
   category: ai-ceo
+- handle: naval
+  user_id: null
+  name: Naval Ravikant
+  category: ai-vc
